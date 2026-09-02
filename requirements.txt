@@ -19,3 +19,7 @@ python-dotenv>=1.0.0
 # 注：embedding 模型 BAAI/bge-small-zh-v1.5 首次使用自动从 HuggingFace 下载
 #     国内可设 HF_ENDPOINT=https://hf-mirror.com；走代理直连时若失败，
 #     可设 HF_HUB_DISABLE_XET=1 后重试。
+
+# ── 免费开源 UI 组件（GitHub）──────────────────────
+streamlit-image-zoom>=0.0.4          # 图片点击缩放预览 (vgilabert94, MIT)
+streamlit-chunk-file-uploader>=1.0.4  # 中文文件上传组件 (GracefulTabby)

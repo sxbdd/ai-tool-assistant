@@ -192,7 +192,6 @@ def save_upload(name: str, data: bytes) -> Path:
 
 
 def ensure_defaults() -> None:
-    st.session_state.setdefault("pending", [])
     st.session_state.setdefault("main_provider", "deepseek")
     st.session_state.setdefault("main_model", "deepseek-chat")
     st.session_state.setdefault("preview_file", None)
@@ -365,8 +364,9 @@ with st.sidebar:
 
     files = list_upload_files()
     with st.expander(f"📁 文件库（{len(files)}）", expanded=False):
+        st.caption("文件库 = 上传文件的存放与管理（预览 / 入库知识库 / 删除）。要让 AI 处理文件，请在对话区用「➕ 附件」上传，会自动进入当前对话。")
         if not files:
-            st.caption("还没有上传文件。在下方输入框点「➕ 附件」上传。")
+            st.caption("还没有上传文件。在对话区点「➕ 附件」上传。")
         else:
             names = [f.name for f in files]
             sel_name = st.selectbox("选择文件", names, key="fl_sel")
@@ -375,24 +375,16 @@ with st.sidebar:
                 f"{icon_of(sel_path)} {sel_name} ｜ {fmt_size(sel_path.stat().st_size)}"
                 f" ｜ {datetime.fromtimestamp(sel_path.stat().st_mtime):%m-%d %H:%M}"
             )
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3 = st.columns(3)
             if c1.button("👁 预览", key="btn_preview_file", use_container_width=True):
                 st.session_state["preview_file"] = str(sel_path) if st.session_state.get("preview_file") != str(sel_path) else None
-            if c2.button("📤 发送", key="btn_send_file", use_container_width=True):
-                if is_image(sel_path):
-                    run_ask(
-                        f"请调用 analyze_image 工具分析 data/uploads/{sel_name} 这张图片，告诉我内容。",
-                        img_path=str(sel_path),
-                    )
-                else:
-                    run_ask(f"请用合适工具读取并处理 data/uploads/{sel_name}，告诉我结果。")
-            if c3.button("📚 入库", key="btn_ingest_file", use_container_width=True):
+            if c2.button("📚 入库", key="btn_ingest_file", use_container_width=True):
                 r = ingest_file(sel_path)
                 if "error" in r:
                     st.error(r["error"])
                 else:
                     st.success(f"已入库：{r.get('chunks', 0)} 个片段")
-            if c4.button("🗑 删除", key="btn_del_file", use_container_width=True):
+            if c3.button("🗑 删除", key="btn_del_file", use_container_width=True):
                 sel_path.unlink()
                 st.session_state["preview_file"] = None
                 st.rerun()
@@ -473,59 +465,43 @@ if not st.session_state.get("history"):
 
 render_messages()
 
-# ---- 附件区 ----
+# ---- 附件区：上传即自动引用到当前对话 ----
+_new_files: list = []  # 本次新增的文件 (name, bytes)
 with st.popover("➕ 附件", use_container_width=False):
-    st.caption("可上传图片 / 文档；文件存入 data/uploads/（侧栏「文件库」管理）。")
-    picked = None
+    st.caption("选择图片/文档后会**自动交给当前对话的 AI 处理**；存到 data/uploads/。")
     if HAS_CHUNK:
         try:
-            picked = chunk_uploader(
+            _picked = chunk_uploader(
                 label="选择文件", type=None, key="attach_chunk",
                 uploader_msg="点击选择文件，或拖拽到此处",
             )
+            if _picked is not None and getattr(_picked, "name", None):
+                _fid = getattr(_picked, "file_id", None) or f"{_picked.name}:{len(_picked.getvalue())}"
+                if _fid not in st.session_state["_seen_files"]:
+                    st.session_state["_seen_files"].add(_fid)
+                    _new_files.append((_picked.name, _picked.getvalue()))
         except Exception:  # noqa: BLE001
-            st.warning("中文组件异常，请用下方备用上传框")
-    if picked is not None and getattr(picked, "name", None):
-        _fid = getattr(picked, "file_id", None) or f"{picked.name}:{len(picked.getvalue())}"
-        if _fid not in st.session_state["_seen_files"]:
-            st.session_state["_seen_files"].add(_fid)
-            st.session_state["pending"].append((picked.name, picked.getvalue()))
-            st.success(f"已加入待发送：{picked.name}")
+            st.warning("中文组件异常，请展开下方备用上传框")
     with st.expander("备用上传框（原生）", expanded=False):
-        fb = st.file_uploader("备用", type=None, accept_multiple_files=True, label_visibility="collapsed")
+        fb = st.file_uploader("备用上传", type=None, accept_multiple_files=True, label_visibility="collapsed")
         if fb:
-            added = 0
             for f in fb:
                 _fid2 = getattr(f, "file_id", None) or f"{f.name}:{f.size}"
                 if _fid2 not in st.session_state["_seen_files"]:
                     st.session_state["_seen_files"].add(_fid2)
-                    st.session_state["pending"].append((f.name, f.getvalue()))
-                    added += 1
-            if added:
-                st.success(f"已加入 {added} 个文件")
+                    _new_files.append((f.name, f.getvalue()))
 
-pending = st.session_state.get("pending", [])
-if pending:
-    st.markdown("**待发送附件：**")
-    for i, (nm, _data) in enumerate(pending):
-        cc1, cc2 = st.columns([8, 1])
-        cc1.caption(f"📎 {nm}")
-        if cc2.button("✖", key=f"rm_{i}"):
-            st.session_state["pending"].pop(i)
-            st.rerun()
-    if st.button(f"📤 发送 {len(pending)} 个附件给 AI", key="btn_send_pending", use_container_width=True):
-        lines, first_img_path = [], None
-        for nm, data in pending:
-            p = save_upload(nm, data)
-            if p.suffix.lower() in IMAGE_EXT and first_img_path is None:
-                first_img_path = str(p)
-            lines.append(
-                f"- {nm}（{'图片 → 请调用 analyze_image 分析' if p.suffix.lower() in IMAGE_EXT else '文档 → 请用 read_file / 相关工具处理'} data/uploads/{p.name}）"
-            )
-        prompt = "我上传了以下文件（已保存到 data/uploads/）：\n" + "\n".join(lines) + "\n\n请逐一查看并处理：图片请识图告诉我内容，文档请读取并总结/按需整理。"
-        run_ask(prompt, img_path=first_img_path)
-        st.session_state["pending"] = []
-        st.session_state["_seen_files"] = set()
+if _new_files:
+    lines, first_img_path = [], None
+    for nm, data in _new_files:
+        p = save_upload(nm, data)
+        if p.suffix.lower() in IMAGE_EXT and first_img_path is None:
+            first_img_path = str(p)
+        kind = "图片 → 请调用 analyze_image 分析" if p.suffix.lower() in IMAGE_EXT else "文档 → 请用 read_file / 相关工具处理"
+        lines.append(f"- {nm}（{kind} data/uploads/{p.name}）")
+    prompt = "我上传了以下文件（已保存到 data/uploads/）：\n" + "\n".join(lines) + "\n\n请逐一查看并处理：图片请识图告诉我内容，文档请读取并总结/按需整理。"
+    run_ask(prompt, img_path=first_img_path)
+    st.caption("📎 已自动引用到当前对话。继续上传？再点上方「➕ 附件」即可。")
 
 # ---- 失败重试 ----
 if st.session_state.get("_retry"):

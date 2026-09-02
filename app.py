@@ -273,12 +273,19 @@ def run_ask(prompt: str, img_path: str | None = None, attachments: list | None =
     model_prompt = prompt
     if tmp_paths:
         model_prompt = prompt + "\n\n（本消息附带了文件引用，请按需查看/处理）\n" + _refs_text(tmp_paths)
+    if not st.session_state.get("web_enabled", True):
+        model_prompt += "\n\n（注意：用户已关闭联网搜索，请勿调用 web_search / open_webpage。）"
     item = {"role": "user", "content": model_prompt, "display": prompt, "trace": []}
     if img_path:
         item["img_path"] = img_path
     if attachments:
         item["files"] = [{"name": a["name"], "kind": a["kind"]} for a in attachments]
     st.session_state["history"].append(item)
+
+    _t = st.session_state.get("session_title", "")
+    if not _t or _t.startswith(("会话 ", "新会话", "未命名")):
+        st.session_state["session_title"] = (prompt or "未命名")[:18]
+        _save_current()
 
     lc_history: list = []
     for it in st.session_state["history"][:-1]:
@@ -287,6 +294,9 @@ def run_ask(prompt: str, img_path: str | None = None, attachments: list | None =
         else:
             lc_history.append(LCAIMessage(content=it["content"]))
 
+    _use_model = st.session_state["main_model"]
+    if st.session_state.get("deep_think") and st.session_state["main_provider"] == "deepseek":
+        _use_model = "deepseek-reasoner"
     st.session_state["_retry"] = None
     with st.chat_message("assistant"):
         ans_box = st.empty()
@@ -298,7 +308,7 @@ def run_ask(prompt: str, img_path: str | None = None, attachments: list | None =
             for ev in ask_stream(
                 model_prompt, lc_history,
                 provider=st.session_state["main_provider"],
-                model=st.session_state["main_model"],
+                model=_use_model,
             ):
                 if ev["type"] == "token":
                     buf += ev["text"]
@@ -391,7 +401,7 @@ with st.sidebar:
             mime="text/markdown", key="btn_export_chat", use_container_width=True,
         )
 
-    with st.expander("⚙️ 模型设置", expanded=True):
+    with st.expander("⚙️ 模型设置", expanded=False):
         status = provider_status()
         main_provider = st.selectbox(
             "主力：服务商", list_providers(), index=0,
@@ -539,6 +549,17 @@ if _runq:
         _af = _entry[2] if len(_entry) > 2 else None
         run_ask(_p, _ip, _af)
 
+# ---- 输入区工具条（参照 DeepSeek 网页版） ----
+_tc1, _tc2, _tc3 = st.columns([1, 1, 2])
+with _tc1:
+    st.checkbox("🧠 深度思考", value=True, key="deep_think",
+                help="默认开启：使用推理模型（deepseek-reasoner），更严谨；关闭则更快")
+with _tc2:
+    st.checkbox("🌐 联网", value=True, key="web_enabled",
+                help="默认开启：需要实时/外部信息时自动联网搜索；关闭后只用知识库与本地工具")
+with _tc3:
+    st.caption(f"模型：{st.session_state['main_provider']} · {st.session_state['main_model']}")
+
 # ---- 附件（引用）区：只加入待发送，不自动处理 ----
 with st.popover("📎 附件", use_container_width=False):
     st.caption("添加文件作为引用：不会立刻处理，输入文字回车后一起发送。")
@@ -597,5 +618,6 @@ st.divider()
 st.caption(
     f"📌 当前会话：{st.session_state.get('session_title', '')} ｜ 主力模型：{st.session_state['main_provider']}/{st.session_state['main_model']}"
     f" ｜ 知识库 {len(list_docs())} 个文档 ｜"
-    + (" ｜ 💾 会话自动保存到 data/sessions/" if True else "")
+    + " ｜ 会话自动保存 data/sessions/"
 )
+st.caption("内容由 AI 生成，仅供参考，请仔细甄别。")

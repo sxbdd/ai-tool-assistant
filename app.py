@@ -158,7 +158,7 @@ def save_upload(name: str, data: bytes) -> Path:
 def ensure_defaults() -> None:
     st.session_state.setdefault("attachments", [])
     st.session_state.setdefault("main_provider", "deepseek")
-    st.session_state.setdefault("main_model", "deepseek-chat")
+    st.session_state.setdefault("main_model", "deepseek-reasoner")
     st.session_state.setdefault("preview_file", None)
     st.session_state.setdefault("_seen_files", set())
 
@@ -273,8 +273,6 @@ def run_ask(prompt: str, img_path: str | None = None, attachments: list | None =
     model_prompt = prompt
     if tmp_paths:
         model_prompt = prompt + "\n\n（本消息附带了文件引用，请按需查看/处理）\n" + _refs_text(tmp_paths)
-    if not st.session_state.get("web_enabled", True):
-        model_prompt += "\n\n（注意：用户已关闭联网搜索，请勿调用 web_search / open_webpage。）"
     item = {"role": "user", "content": model_prompt, "display": prompt, "trace": []}
     if img_path:
         item["img_path"] = img_path
@@ -294,9 +292,6 @@ def run_ask(prompt: str, img_path: str | None = None, attachments: list | None =
         else:
             lc_history.append(LCAIMessage(content=it["content"]))
 
-    _use_model = st.session_state["main_model"]
-    if st.session_state.get("deep_think") and st.session_state["main_provider"] == "deepseek":
-        _use_model = "deepseek-reasoner"
     st.session_state["_retry"] = None
     with st.chat_message("assistant"):
         ans_box = st.empty()
@@ -308,7 +303,7 @@ def run_ask(prompt: str, img_path: str | None = None, attachments: list | None =
             for ev in ask_stream(
                 model_prompt, lc_history,
                 provider=st.session_state["main_provider"],
-                model=_use_model,
+                model=st.session_state["main_model"],
             ):
                 if ev["type"] == "token":
                     buf += ev["text"]
@@ -548,17 +543,6 @@ if _runq:
         _ip = _entry[1] if len(_entry) > 1 else None
         _af = _entry[2] if len(_entry) > 2 else None
         run_ask(_p, _ip, _af)
-
-# ---- 输入区工具条（参照 DeepSeek 网页版） ----
-_tc1, _tc2, _tc3 = st.columns([1, 1, 2])
-with _tc1:
-    st.checkbox("🧠 深度思考", value=True, key="deep_think",
-                help="默认开启：使用推理模型（deepseek-reasoner），更严谨；关闭则更快")
-with _tc2:
-    st.checkbox("🌐 联网", value=True, key="web_enabled",
-                help="默认开启：需要实时/外部信息时自动联网搜索；关闭后只用知识库与本地工具")
-with _tc3:
-    st.caption(f"模型：{st.session_state['main_provider']} · {st.session_state['main_model']}")
 
 # ---- 附件（引用）区：只加入待发送，不自动处理 ----
 with st.popover("📎 附件", use_container_width=False):

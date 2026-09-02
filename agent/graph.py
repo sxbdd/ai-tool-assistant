@@ -16,7 +16,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from .model_providers import create_chat_model
-from .config import check_api_key
+from .config import ASK_RETRIES, MAX_CONTEXT_MESSAGES, check_api_key
 from .tools import TOOLS, run_tool
 
 SYSTEM_PROMPT = """你是「AI 工具调用小助手」，一个会调用工具完成任务的智能体（Agent）。
@@ -98,14 +98,74 @@ def create_agent(provider: str | None = None, model: str | None = None):
     return builder.compile()
 
 
+def _trim_history(history: list | None) -> list:
+    """只保留最近 MAX_CONTEXT_MESSAGES 条消息，避免上下文过长。"""
+    h = list(history or [])
+    if len(h) > MAX_CONTEXT_MESSAGES:
+        h = h[-MAX_CONTEXT_MESSAGES:]
+    return h
+
+
 def ask(question: str, history: list | None = None, provider: str | None = None, model: str | None = None) -> tuple[str, list[str]]:
-    """对外接口：向 Agent 提问，返回 (最终回答, 工具调用轨迹)。"""
+    """对外接口：向 Agent 提问，返回 (最终回答, 工具调用轨迹)。带自动重试。"""
     graph = create_agent(provider=provider, model=model)
-    init_messages: list = list(history or [])
+    init_messages: list = _trim_history(history)
     init_messages.append(HumanMessage(content=question))
-    result = graph.invoke(
-        {"messages": init_messages, "trace": []},
-        config={"recursion_limit": 40},   # 防止极端情况下无限循环
-    )
-    answer = result["messages"][-1].content or "（模型未返回内容）"
-    return str(answer), list(result.get("trace", []))
+    last_exc: Exception | None = None
+    for attempt in range(ASK_RETRIES):
+        try:
+            result = graph.invoke(
+                {"messages": init_messages, "trace": []},
+                config={"recursion_limit": 40},   # 防止极端情况下无限循环
+            )
+            answer = result["messages"][-1].content or "（模型未返回内容）"
+            return str(answer), list(result.get("trace", []))
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < ASK_RETRIES - 1:
+                continue
+    raise last_exc  # type: ignore[misc]
+
+
+def ask_stream(question: str, history: list | None = None, provider: str | None = None, model: str | None = None):
+    """流式接口：逐段产出事件 dict，供网页实时展示。
+
+    事件类型：
+      {"type": "token", "text": ...}   模型回答增量文字
+      {"type": "tool",  "text": ...}   一次工具调用（执行完成）
+      {"type": "answer", "text": ...}  完整最终回答
+      {"type": "trace", "lines": [...]} 全部工具调用轨迹
+      {"type": "error", "text": ...}   出错信息
+    """
+    graph = create_agent(provider=provider, model=model)
+    init_messages: list = _trim_history(history)
+    init_messages.append(HumanMessage(content=question))
+    trace_lines: list[str] = []
+    answer_parts: list[str] = []
+    try:
+        events = graph.stream(
+            {"messages": init_messages, "trace": []},
+            config={"recursion_limit": 40},
+            stream_mode=["messages", "updates"],
+        )
+        for item in events:
+            mode, payload = item if (isinstance(item, tuple) and len(item) == 2) else (item, None)
+            if mode == "messages":
+                # payload 可能是 (chunk, meta) 或单个 chunk，做兼容处理
+                chunk, _meta = payload if (isinstance(payload, tuple) and len(payload) == 2) else (payload, None)
+                text = getattr(chunk, "content", None) or ""
+                if text:
+                    answer_parts.append(str(text))
+                    yield {"type": "token", "text": str(text)}
+            elif mode == "updates" and isinstance(payload, dict):
+                for node, update in payload.items():
+                    if node == "tools":
+                        for line in update.get("trace") or []:
+                            trace_lines.append(line)
+                            yield {"type": "tool", "text": line}
+    except Exception as exc:  # noqa: BLE001
+        yield {"type": "error", "text": str(exc)}
+        return
+    answer = "".join(answer_parts).strip() or "（模型未返回内容）"
+    yield {"type": "answer", "text": answer}
+    yield {"type": "trace", "lines": list(trace_lines)}

@@ -13,7 +13,7 @@ import streamlit as st
 from langchain_core.messages import AIMessage as LCAIMessage
 from langchain_core.messages import HumanMessage
 
-from agent.graph import ask
+from agent.graph import ask, ask_stream
 from agent.model_providers import PROVIDERS, list_providers, provider_status
 from rag.config import IMAGE_EXT, SUPPORTED_EXT, UPLOAD_DIR, ensure_dirs
 from rag.ingest import ingest_file, ingest_folder
@@ -38,6 +38,19 @@ except Exception:  # noqa: BLE001
     HAS_ZOOM = False
 
 st.set_page_config(page_title="AI 工具调用小助手", page_icon="🤖", layout="wide")
+
+# ============================================================ 中文化样式（尽力而为）
+st.markdown('''
+<style>
+/* Streamlit 原生上传框中文化：选择器未命中时保持原样，不影响使用 */
+[data-testid="stFileUploaderDropzone"] button { font-size: 0 !important; }
+[data-testid="stFileUploaderDropzone"] button::after { content: "选择文件"; font-size: 1rem !important; font-weight: 600; }
+[data-testid="stFileUploaderDropzoneInstructions"] { visibility: hidden; }
+[data-testid="stFileUploaderDropzoneInstructions"]::after { content: "点击选择或将文件拖到此处"; visibility: visible; }
+[data-testid="stWidgetLabel"] p { color: #334155; }
+</style>
+''', unsafe_allow_html=True)
+
 
 # ============================================================ 会话存储
 def _now() -> str:
@@ -117,6 +130,25 @@ def delete_session(sid: str) -> None:
 
 
 # ============================================================ 小工具
+
+
+def export_history_md() -> str:
+    """把当前会话历史导出为 Markdown。"""
+    lines = [
+        f"# {st.session_state.get('session_title', '会话')}",
+        "",
+        f"> 导出时间：{_now()}",
+        "",
+    ]
+    for it in st.session_state.get("history", []):
+        who = "😀 我" if it.get("role") == "user" else "🤖 AI"
+        lines.append(f"### {who}\n\n{it.get('content', '')}\n")
+        if it.get("trace"):
+            lines.append("**工具调用：**\n")
+            for s in it["trace"]:
+                lines.append(f"- {s}\n")
+    return "\n".join(lines)
+
 def fmt_size(n: int) -> str:
     if n < 1024:
         return f"{n} B"
@@ -195,28 +227,46 @@ def run_ask(prompt: str, img_path: str | None = None) -> None:
         else:
             lc_history.append(LCAIMessage(content=it["content"]))
 
+    st.session_state["_retry"] = None
     with st.chat_message("assistant"):
+        ans_box = st.empty()
+        tool_box = st.empty()
+        trace_lines: list[str] = []
+        buf = ""
+        failed = None
         try:
-            with st.spinner("Agent 正在思考并调用工具……"):
-                answer, trace = ask(
-                    prompt, lc_history,
-                    provider=st.session_state["main_provider"],
-                    model=st.session_state["main_model"],
-                )
-        except RuntimeError as exc:
-            st.error(str(exc))
-            answer, trace = None, []
+            for ev in ask_stream(
+                prompt, lc_history,
+                provider=st.session_state["main_provider"],
+                model=st.session_state["main_model"],
+            ):
+                if ev["type"] == "token":
+                    buf += ev["text"]
+                    ans_box.markdown(buf + "▍")
+                elif ev["type"] == "tool":
+                    trace_lines.append(ev["text"])
+                    tool_box.caption("🧰 " + " ｜ ".join(trace_lines[-3:]))
+                elif ev["type"] == "error":
+                    failed = ev["text"]
+                elif ev["type"] == "answer":
+                    buf = ev["text"]
+                    ans_box.markdown(buf)
+                elif ev["type"] == "trace":
+                    trace_lines = ev["lines"]
         except Exception as exc:  # noqa: BLE001
-            st.error(f"出错了：{exc}")
-            answer, trace = None, []
-        if answer:
-            st.markdown(answer)
-            if trace:
-                with st.expander("🧰 工具调用过程", expanded=len(trace) > 1):
-                    for s in trace:
+            failed = str(exc)
+        if failed:
+            st.error(f"出错了：{failed}")
+            st.session_state["_retry"] = (prompt, img_path)
+        else:
+            if buf:
+                ans_box.markdown(buf)
+            if trace_lines:
+                with st.expander("🧰 工具调用过程", expanded=len(trace_lines) > 1):
+                    for s in trace_lines:
                         st.markdown(s)
             st.session_state["history"].append(
-                {"role": "assistant", "content": answer, "trace": trace}
+                {"role": "assistant", "content": buf, "trace": trace_lines}
             )
     _save_current()
 
@@ -231,6 +281,12 @@ with st.sidebar:
     with st.expander("💬 会话管理", expanded=False):
         sessions = list_sessions()
         cur_id = st.session_state["cur_sid"]
+        _q = st.text_input("🔍 搜索会话", key="sess_search", label_visibility="collapsed", placeholder="🔍 搜索会话标题…")
+        if _q.strip():
+            sessions = [s for s in sessions if _q.strip().lower() in s["title"].lower()]
+            if cur_id not in {s["id"] for s in sessions}:
+                cur = read_session(cur_id)
+                sessions.insert(0, {"id": cur["id"], "title": cur["title"] + "（当前）", "updated": cur.get("updated", "")})
         if sessions:
             options = {s["id"]: s["title"] for s in sessions}
             if cur_id not in options:
@@ -261,6 +317,17 @@ with st.sidebar:
                 st.session_state["renaming"] = False
                 _save_current()
                 st.rerun()
+        st.divider()
+        cc1, cc2 = st.columns(2)
+        if cc1.button("🧹 清空对话", key="btn_clear_chat", use_container_width=True):
+            st.session_state["history"] = []
+            _save_current()
+            st.rerun()
+        cc2.download_button(
+            "⬇ 导出对话", data=export_history_md(),
+            file_name=f"{st.session_state.get('session_title', '会话')}.md",
+            mime="text/markdown", key="btn_export_chat", use_container_width=True,
+        )
 
     with st.expander("⚙️ 模型设置", expanded=True):
         status = provider_status()
@@ -448,6 +515,16 @@ if pending:
         prompt = "我上传了以下文件（已保存到 data/uploads/）：\n" + "\n".join(lines) + "\n\n请逐一查看并处理：图片请识图告诉我内容，文档请读取并总结/按需整理。"
         run_ask(prompt, img_path=first_img_path)
         st.session_state["pending"] = []
+
+# ---- 失败重试 ----
+if st.session_state.get("_retry"):
+    rp, rimg = st.session_state["_retry"]
+    if st.button("🔄 重试上一条", key="btn_retry_last", use_container_width=True):
+        h = st.session_state.get("history", [])
+        if h and h[-1].get("role") == "user":
+            h.pop()
+        st.session_state["_retry"] = None
+        run_ask(rp, rimg)
 
 # ---- 对话输入 ----
 prompt = st.chat_input("输入任务，如：根据我的笔记解释 RAG｜北京天气｜联网查最新 AI 新闻")

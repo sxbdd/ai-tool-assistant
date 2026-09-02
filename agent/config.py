@@ -41,6 +41,10 @@ WEB_SEARCH_BACKEND = os.getenv("WEB_SEARCH_BACKEND", "bing").strip().lower()  # 
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()  # 可选：更稳的搜索 API
 
 MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))
+# 每次发给模型的历史消息条数上限（超出裁掉最旧的，控制上下文长度）
+MAX_CONTEXT_MESSAGES = int(os.getenv("MAX_CONTEXT_MESSAGES", "12"))
+# 网络/瞬时错误自动重试次数
+ASK_RETRIES = int(os.getenv("ASK_RETRIES", "2"))
 
 
 def check_api_key() -> None:

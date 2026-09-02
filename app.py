@@ -196,6 +196,7 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("main_provider", "deepseek")
     st.session_state.setdefault("main_model", "deepseek-chat")
     st.session_state.setdefault("preview_file", None)
+    st.session_state.setdefault("_seen_files", set())
 
 
 def render_messages() -> None:
@@ -485,14 +486,23 @@ with st.popover("➕ 附件", use_container_width=False):
         except Exception:  # noqa: BLE001
             st.warning("中文组件异常，请用下方备用上传框")
     if picked is not None and getattr(picked, "name", None):
-        st.session_state["pending"].append((picked.name, picked.getvalue()))
-        st.success(f"已加入待发送：{picked.name}")
+        _fid = getattr(picked, "file_id", None) or f"{picked.name}:{len(picked.getvalue())}"
+        if _fid not in st.session_state["_seen_files"]:
+            st.session_state["_seen_files"].add(_fid)
+            st.session_state["pending"].append((picked.name, picked.getvalue()))
+            st.success(f"已加入待发送：{picked.name}")
     with st.expander("备用上传框（原生）", expanded=False):
         fb = st.file_uploader("备用", type=None, accept_multiple_files=True, label_visibility="collapsed")
         if fb:
+            added = 0
             for f in fb:
-                st.session_state["pending"].append((f.name, f.getvalue()))
-            st.success(f"已加入 {len(fb)} 个文件")
+                _fid2 = getattr(f, "file_id", None) or f"{f.name}:{f.size}"
+                if _fid2 not in st.session_state["_seen_files"]:
+                    st.session_state["_seen_files"].add(_fid2)
+                    st.session_state["pending"].append((f.name, f.getvalue()))
+                    added += 1
+            if added:
+                st.success(f"已加入 {added} 个文件")
 
 pending = st.session_state.get("pending", [])
 if pending:
@@ -515,6 +525,7 @@ if pending:
         prompt = "我上传了以下文件（已保存到 data/uploads/）：\n" + "\n".join(lines) + "\n\n请逐一查看并处理：图片请识图告诉我内容，文档请读取并总结/按需整理。"
         run_ask(prompt, img_path=first_img_path)
         st.session_state["pending"] = []
+        st.session_state["_seen_files"] = set()
 
 # ---- 失败重试 ----
 if st.session_state.get("_retry"):

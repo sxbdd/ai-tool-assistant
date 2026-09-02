@@ -192,6 +192,7 @@ def save_upload(name: str, data: bytes) -> Path:
 
 
 def ensure_defaults() -> None:
+    st.session_state.setdefault("attachments", [])
     st.session_state.setdefault("main_provider", "deepseek")
     st.session_state.setdefault("main_model", "deepseek-chat")
     st.session_state.setdefault("preview_file", None)
@@ -234,6 +235,32 @@ def _message_actions(i: int, item: dict) -> None:
                 st.rerun()
 
 
+def _render_files(files: list) -> None:
+    """在消息里展示文件引用：图片小缩略图，其余仅文件名（不展开内容）。"""
+    for f in files:
+        if f.get("kind") == "img" and Path(f.get("path", "")).exists():
+            st.image(f["path"], width=90)
+        else:
+            st.caption(f"📎 {f.get('name', '')}")
+
+
+def _save_attachment(name: str, data: bytes) -> None:
+    """静默保存上传文件并把引用加入当前消息（不弹提示、不自动处理）。"""
+    fp = save_upload(name, data)
+    st.session_state.setdefault("attachments", []).append(
+        {"name": fp.name, "path": str(fp), "kind": "img" if fp.suffix.lower() in IMAGE_EXT else "doc"}
+    )
+
+
+def _refs_text(files: list) -> str:
+    """生成发给模型的精简引用说明（用户界面不展示这堆文字）。"""
+    lines = []
+    for f in files:
+        tip = "图片→用 analyze_image 查看" if f.get("kind") == "img" else "文档→用 read_file/相关工具读取"
+        lines.append(f"- {f.get('name', '')}（{tip}）：{f.get('path', '')}")
+    return "\n".join(lines)
+
+
 def render_messages() -> None:
     """渲染历史消息；操作按钮统一走 _message_actions。"""
     hist = st.session_state.get("history", [])
@@ -241,7 +268,9 @@ def render_messages() -> None:
         with st.chat_message(item["role"]):
             if item.get("img_path") and Path(item["img_path"]).exists():
                 st.image(str(item["img_path"]), width=120)
-            st.markdown(item["content"])
+            st.markdown(item.get("display") or item["content"])
+            if item["role"] == "user" and item.get("files"):
+                _render_files(item["files"])
             if item.get("trace"):
                 with st.expander("🧰 工具调用过程"):
                     for s in item["trace"]:
@@ -249,14 +278,21 @@ def render_messages() -> None:
             _message_actions(i, item)
 
 
-def run_ask(prompt: str, img_path: str | None = None) -> None:
+def run_ask(prompt: str, img_path: str | None = None, attachments: list | None = None) -> None:
     with st.chat_message("user"):
         if img_path and Path(img_path).exists():
             st.image(img_path, width=120)
+        if attachments:
+            _render_files(attachments)
         st.markdown(prompt)
-    item = {"role": "user", "content": prompt, "trace": []}
+    model_prompt = prompt
+    if attachments:
+        model_prompt = prompt + "\n\n（本消息附带了文件引用，请按需查看/处理）\n" + _refs_text(attachments)
+    item = {"role": "user", "content": model_prompt, "display": prompt, "trace": []}
     if img_path:
         item["img_path"] = img_path
+    if attachments:
+        item["files"] = [{"name": a["name"], "path": a["path"], "kind": a["kind"]} for a in attachments]
     st.session_state["history"].append(item)
 
     lc_history: list = []
@@ -275,7 +311,7 @@ def run_ask(prompt: str, img_path: str | None = None) -> None:
         failed = None
         try:
             for ev in ask_stream(
-                prompt, lc_history,
+                model_prompt, lc_history,
                 provider=st.session_state["main_provider"],
                 model=st.session_state["main_model"],
             ):
@@ -296,7 +332,7 @@ def run_ask(prompt: str, img_path: str | None = None) -> None:
             failed = str(exc)
         if failed:
             st.error(f"出错了：{failed}")
-            st.session_state["_retry"] = (prompt, img_path)
+            st.session_state["_retry"] = (prompt, img_path, attachments)
         else:
             if buf:
                 ans_box.markdown(buf)
@@ -506,12 +542,14 @@ if _action:
         # 从历史里反查产生这条回答的用户提问，避免在消息里重复存 prompt
         ui = next((j for j in range(i - 1, -1, -1) if h[j]["role"] == "user"), None)
         if ui is not None:
-            prompt, img = h[ui]["content"], h[ui].get("img_path")
+            prompt = h[ui]["display"] if "display" in h[ui] else h[ui]["content"]
+            img = h[ui].get("img_path")
+            files = h[ui].get("files")
             del h[i]
             del h[ui]
             st.session_state["history"] = h
             _save_current()
-            st.session_state["_run_queue"] = st.session_state.get("_run_queue", []) + [(prompt, img)]
+            st.session_state["_run_queue"] = st.session_state.get("_run_queue", []) + [(prompt, img, files)]
         else:
             st.warning("找不到这条回答对应的提问，无法重写。")
 
@@ -552,13 +590,15 @@ if _edit:
 # ---- 队列：统一在主对话区执行（保证气泡不跑到侧栏） ----
 _runq = st.session_state.pop("_run_queue", None)
 if _runq:
-    for _p, _ip in _runq:
-        run_ask(_p, _ip)
+    for _entry in _runq:
+        _p = _entry[0]
+        _ip = _entry[1] if len(_entry) > 1 else None
+        _af = _entry[2] if len(_entry) > 2 else None
+        run_ask(_p, _ip, _af)
 
-# ---- 附件区：上传即自动引用到当前对话 ----
-_new_files: list = []  # 本次新增的文件 (name, bytes)
-with st.popover("➕ 附件", use_container_width=False):
-    st.caption("选择图片/文档后会**自动交给当前对话的 AI 处理**；存到 data/uploads/。")
+# ---- 附件（引用）区：只加入待发送，不自动处理 ----
+with st.popover("📎 附件", use_container_width=False):
+    st.caption("添加文件作为引用：不会立刻处理，输入文字回车后一起发送。")
     if HAS_CHUNK:
         try:
             _picked = chunk_uploader(
@@ -569,44 +609,45 @@ with st.popover("➕ 附件", use_container_width=False):
                 _fid = getattr(_picked, "file_id", None) or f"{_picked.name}:{len(_picked.getvalue())}"
                 if _fid not in st.session_state["_seen_files"]:
                     st.session_state["_seen_files"].add(_fid)
-                    _new_files.append((_picked.name, _picked.getvalue()))
+                    _save_attachment(_picked.name, _picked.getvalue())
         except Exception:  # noqa: BLE001
-            st.warning("中文组件异常，请展开下方备用上传框")
-    with st.expander("备用上传框（原生）", expanded=False):
-        fb = st.file_uploader("备用上传", type=None, accept_multiple_files=True, label_visibility="collapsed")
+            pass
+    with st.expander("备用上传框", expanded=False):
+        fb = st.file_uploader("文件", type=None, accept_multiple_files=True, label_visibility="collapsed")
         if fb:
             for f in fb:
                 _fid2 = getattr(f, "file_id", None) or f"{f.name}:{f.size}"
                 if _fid2 not in st.session_state["_seen_files"]:
                     st.session_state["_seen_files"].add(_fid2)
-                    _new_files.append((f.name, f.getvalue()))
+                    _save_attachment(f.name, f.getvalue())
 
-if _new_files:
-    lines, first_img_path = [], None
-    for nm, data in _new_files:
-        p = save_upload(nm, data)
-        if p.suffix.lower() in IMAGE_EXT and first_img_path is None:
-            first_img_path = str(p)
-        kind = "图片 → 请调用 analyze_image 分析" if p.suffix.lower() in IMAGE_EXT else "文档 → 请用 read_file / 相关工具处理"
-        lines.append(f"- {nm}（{kind} data/uploads/{p.name}）")
-    prompt = "我上传了以下文件（已保存到 data/uploads/）：\n" + "\n".join(lines) + "\n\n请逐一查看并处理：图片请识图告诉我内容，文档请读取并总结/按需整理。"
-    run_ask(prompt, img_path=first_img_path)
-    st.caption("📎 已自动引用到当前对话。继续上传？再点上方「➕ 附件」即可。")
+_attachments = st.session_state.get("attachments") or []
+if _attachments:
+    for _idx, _a in enumerate(_attachments):
+        _ic = "🖼️" if _a["kind"] == "img" else "📎"
+        _r1, _r2 = st.columns([10, 1])
+        _r1.caption(f"{_ic} {_a['name']}")
+        if _r2.button("✖", key=f"att_del_{_idx}", help="移除该引用"):
+            _attachments.pop(_idx)
+            st.session_state["attachments"] = _attachments
+            st.rerun()
 
 # ---- 失败重试 ----
 if st.session_state.get("_retry"):
-    rp, rimg = st.session_state["_retry"]
+    rp, rimg, ratt = st.session_state["_retry"]
     if st.button("🔄 重试上一条", key="btn_retry_last", use_container_width=True):
         h = st.session_state.get("history", [])
         if h and h[-1].get("role") == "user":
             h.pop()
         st.session_state["_retry"] = None
-        run_ask(rp, rimg)
+        run_ask(rp, rimg, ratt)
 
 # ---- 对话输入 ----
 prompt = st.chat_input("输入任务，如：根据我的笔记解释 RAG｜北京天气｜联网查最新 AI 新闻")
 if prompt:
-    run_ask(prompt)
+    _send_atts = st.session_state.get("attachments") or []
+    run_ask(prompt, attachments=_send_atts)
+    st.session_state["attachments"] = []
 
 # ---- 底部状态栏 ----
 st.divider()

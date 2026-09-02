@@ -198,8 +198,46 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("_seen_files", set())
 
 
+def _clipboard_html(text: str) -> str:
+    """返回一个'复制'HTML 按钮（点击把内容写入剪贴板，本地 localhost 可用）。"""
+    import json as _json
+    payload = _json.dumps(text, ensure_ascii=False)
+    onclick = f"navigator.clipboard.writeText({payload});this.textContent='✅ 已复制'"
+    return (
+        '<button style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;'
+        'color:#475569;font-size:12px;padding:1px 10px;cursor:pointer" '
+        f'onclick="{onclick}">📋 复制</button>'
+    )
+
+
+def _message_actions(i: int, item: dict) -> None:
+    """在消息正文之后渲染操作按钮（复制/重写/删除/编辑），逻辑集中在一处。"""
+    if item["role"] == "user":
+        c1, c2, _ = st.columns([1, 1, 5])
+        with c1:
+            if st.button("✏️ 编辑", key=f"edit_msg_{i}", use_container_width=True):
+                st.session_state["_edit"] = {"idx": i, "text": item["content"]}
+                st.rerun()
+        with c2:
+            st.markdown(_clipboard_html(item["content"]), unsafe_allow_html=True)
+    else:
+        c1, c2, c3, _ = st.columns([1, 1, 1, 4])
+        with c1:
+            st.markdown(_clipboard_html(item["content"]), unsafe_allow_html=True)
+        with c2:
+            if st.button("🔄 重写", key=f"regen_msg_{i}", use_container_width=True):
+                st.session_state["_action"] = {"type": "regen", "idx": i}
+                st.rerun()
+        with c3:
+            if st.button("🗑", key=f"del_msg_{i}", use_container_width=True, help="删除本条回答"):
+                st.session_state["_action"] = {"type": "del", "idx": i}
+                st.rerun()
+
+
 def render_messages() -> None:
-    for item in st.session_state.get("history", []):
+    """渲染历史消息；操作按钮统一走 _message_actions。"""
+    hist = st.session_state.get("history", [])
+    for i, item in enumerate(hist):
         with st.chat_message(item["role"]):
             if item.get("img_path") and Path(item["img_path"]).exists():
                 st.image(str(item["img_path"]), width=120)
@@ -208,6 +246,7 @@ def render_messages() -> None:
                 with st.expander("🧰 工具调用过程"):
                     for s in item["trace"]:
                         st.markdown(s)
+            _message_actions(i, item)
 
 
 def run_ask(prompt: str, img_path: str | None = None) -> None:
@@ -454,16 +493,67 @@ with st.sidebar:
 st.title("🤖 AI 工具调用小助手")
 st.caption("查资料 · 看图 · 联网搜 · 调工具 —— 让大模型帮你完成多步任务")
 
-if not st.session_state.get("history"):
-    st.info(
-        "👋 欢迎！试试：\n\n"
-        "1. **知识库问答**：左侧「知识库管理」一键载入示例笔记，然后问「根据我的笔记，什么是 RAG？」\n"
-        "2. **识图**：点下方「➕ 附件」上传一张图片，AI 会自动识别\n"
-        "3. **联网**：直接问「联网查一下今天 AI Agent 的新进展」\n"
-        "4. **调工具**：「北京和上海今天天气怎么样？」"
-    )
+# ---- 消息操作处理（删除 / 重写） ----
+_action = st.session_state.pop("_action", None)
+if _action:
+    h = st.session_state.get("history", [])
+    kind, i = _action.get("type"), _action.get("idx", -1)
+    if kind == "del" and 0 <= i < len(h):
+        h.pop(i)
+        st.session_state["history"] = h
+        _save_current()
+    elif kind == "regen" and 0 < i < len(h) and h[i]["role"] == "assistant":
+        # 从历史里反查产生这条回答的用户提问，避免在消息里重复存 prompt
+        ui = next((j for j in range(i - 1, -1, -1) if h[j]["role"] == "user"), None)
+        if ui is not None:
+            prompt, img = h[ui]["content"], h[ui].get("img_path")
+            del h[i]
+            del h[ui]
+            st.session_state["history"] = h
+            _save_current()
+            st.session_state["_run_queue"] = st.session_state.get("_run_queue", []) + [(prompt, img)]
+        else:
+            st.warning("找不到这条回答对应的提问，无法重写。")
 
 render_messages()
+
+# ---- 空会话快捷示例（点击即体验） ----
+if not st.session_state.get("history"):
+    SUGGESTIONS = [
+        ("📚 知识库问答", "根据我的笔记，什么是 RAG？"),
+        ("📊 整理表格", "整理 data/示例-销售数据.csv，并告诉我数据有什么问题"),
+        ("🌤 两地天气", "北京和上海今天天气怎么样？"),
+        ("🌐 联网查资料", "联网搜索：LangGraph 是什么？简单介绍"),
+    ]
+    st.caption("👋 欢迎！点下面的示例直接体验，或自己输入任务：")
+    scol = st.columns(len(SUGGESTIONS))
+    for col, (label, q) in zip(scol, SUGGESTIONS):
+        if col.button(label, key=f"sug_{label[:2]}", use_container_width=True):
+            st.session_state["_run_queue"] = st.session_state.get("_run_queue", []) + [(q, None)]
+
+# ---- 编辑历史消息并从此处重发 ----
+_edit = st.session_state.get("_edit")
+if _edit:
+    with st.container(border=True):
+        st.caption("✏️ 编辑消息并重发（该消息之后的内容会被替换）")
+        new_text = st.text_area("消息内容", value=_edit.get("text", ""), key="edit_text_area", height=90)
+        ec1, ec2 = st.columns(2)
+        if ec1.button("💾 保存并重发", key="btn_edit_save", use_container_width=True):
+            idx = _edit.get("idx", 0)
+            h = st.session_state.get("history", [])[:idx]
+            st.session_state["history"] = h
+            st.session_state.pop("_edit", None)
+            st.session_state["_run_queue"] = st.session_state.get("_run_queue", []) + [(new_text, None)]
+            st.rerun()
+        if ec2.button("取消", key="btn_edit_cancel", use_container_width=True):
+            st.session_state.pop("_edit", None)
+            st.rerun()
+
+# ---- 队列：统一在主对话区执行（保证气泡不跑到侧栏） ----
+_runq = st.session_state.pop("_run_queue", None)
+if _runq:
+    for _p, _ip in _runq:
+        run_ask(_p, _ip)
 
 # ---- 附件区：上传即自动引用到当前对话 ----
 _new_files: list = []  # 本次新增的文件 (name, bytes)

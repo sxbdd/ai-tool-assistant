@@ -25,12 +25,6 @@ ensure_dirs()
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- 可选第三方组件（GitHub 免费开源）----
-try:  # 中文文件上传组件（GracefulTabby, MIT）
-    from streamlit_chunk_file_uploader import uploader as chunk_uploader
-    HAS_CHUNK = True
-except Exception:  # noqa: BLE001
-    HAS_CHUNK = False
-
 
 st.set_page_config(page_title="AI 工具调用小助手", page_icon="🤖", layout="wide")
 
@@ -436,31 +430,55 @@ with st.sidebar:
             accept_multiple_files=True,
         )
         if kb_up and st.button("上传并入库", key="btn_upload_kb", use_container_width=True):
+            _ok = _err = _chunks = 0
             for f in kb_up:
                 if f.size > 20 * 1024 * 1024:
-                    st.error(f"{f.name} 超过 20MB，跳过")
+                    _err += 1
                     continue
                 dest = save_upload(f.name, f.getvalue())
                 r = ingest_file(dest)
-                st.success(f"{f.name} -> {r.get('chunks', 0)} 片段" if "error" not in r else f"{f.name}：{r['error']}")
+                if "error" in r:
+                    _err += 1
+                else:
+                    _ok += 1
+                    _chunks += r.get("chunks", 0)
+            st.caption(f"入库完成：成功 {_ok} / 失败 {_err}，共 {_chunks} 片段")
         docs = list_docs()
         if not docs and (BASE_DIR / "data" / "示例-课程笔记.md").exists():
             st.caption("知识库为空。可先载入示例笔记体验问答：")
             if st.button("📥 一键载入示例笔记", key="btn_load_sample", use_container_width=True):
                 r = ingest_file(BASE_DIR / "data" / "示例-课程笔记.md")
                 st.success(f"已载入：{r.get('chunks', 0)} 个片段")
-        st.markdown("**导入本地文件夹（绝对路径）**")
-        folder_path = st.text_input("文件夹路径", placeholder="如 D:\\我的笔记", label_visibility="collapsed")
-        if folder_path.strip() and st.button("扫描并导入", key="btn_scan_import", use_container_width=True):
-            folder = Path(folder_path.strip())
-            if not folder.is_dir():
-                st.error(f"不是有效文件夹：{folder}")
+        st.markdown("**导入本地文件夹（先预览后确认）**")
+        folder_path = st.text_input("文件夹路径", key="kb_folder_path", placeholder="如 D:\\我的笔记", label_visibility="collapsed")
+        if folder_path.strip() and st.button("① 扫描预览", key="btn_scan_preview", use_container_width=True):
+            _folder = Path(folder_path.strip())
+            if not _folder.is_dir():
+                st.error(f"不是有效文件夹：{_folder}")
+                st.session_state.pop("kb_scan_path", None)
             else:
-                n = len([x for x in folder.rglob("*") if x.is_file() and x.suffix.lower() in SUPPORTED_EXT])
-                st.info(f"扫描到 {n} 个支持文件，正在入库……")
-                results = ingest_folder(folder)
+                _fs = [x for x in _folder.rglob("*") if x.is_file() and x.suffix.lower() in SUPPORTED_EXT]
+                st.session_state["kb_scan_path"] = str(_folder)
+                st.session_state["kb_scan_count"] = len(_fs)
+                st.session_state["kb_scan_files"] = [str(x.relative_to(_folder)) for x in _fs[:6]]
+                st.rerun()
+        if st.session_state.get("kb_scan_path") and folder_path.strip() == st.session_state.get("kb_scan_path"):
+            _cnt = st.session_state.get("kb_scan_count", 0)
+            _names = st.session_state.get("kb_scan_files", [])
+            _preview = f"扫描到 {_cnt} 个支持文件" + (f"：{'、'.join(_names)}{'…' if _cnt > len(_names) else ''}" if _names else "")
+            st.caption(_preview)
+            _k1, _k2 = st.columns(2)
+            if _k1.button("② 确认导入", key="btn_kb_confirm", use_container_width=True):
+                results = ingest_folder(Path(st.session_state["kb_scan_path"]))
                 chunks = sum(r.get("chunks", 0) for r in results if "error" not in r)
-                st.success(f"完成：入库 {chunks} 片段 / {sum(1 for r in results if 'error' not in r)} 个文件")
+                st.caption(f"导入完成：{chunks} 片段 / {sum(1 for r in results if 'error' not in r)} 个文件")
+                for _k in ("kb_scan_path", "kb_scan_count", "kb_scan_files"):
+                    st.session_state.pop(_k, None)
+                st.rerun()
+            if _k2.button("取消", key="btn_kb_cancel", use_container_width=True):
+                for _k in ("kb_scan_path", "kb_scan_count", "kb_scan_files"):
+                    st.session_state.pop(_k, None)
+                st.rerun()
         if docs:
             st.divider()
             st.markdown(f"**已入库（{len(docs)}）**")
@@ -472,8 +490,9 @@ with st.sidebar:
                 st.rerun()
 
 # ============================================================ 主区
-st.title("🤖 AI 工具调用小助手")
-st.caption("查资料 · 看图 · 联网搜 · 调工具 —— 让大模型帮你完成多步任务")
+if st.session_state.get("history"):
+    st.title("🤖 AI 工具调用小助手")
+    st.caption("查资料 · 看图 · 联网搜 · 调工具 —— 让大模型帮你完成多步任务")
 
 # ---- 消息操作处理（删除 / 重写） ----
 _action = st.session_state.pop("_action", None)
@@ -503,19 +522,37 @@ if _action:
 
 render_messages()
 
-# ---- 空会话快捷示例（点击即体验） ----
+# ---- 空态：大留白 + 居中引导（参考 ChatGPT/DeepSeek） ----
 if not st.session_state.get("history"):
-    SUGGESTIONS = [
-        ("📚 知识库问答", "根据我的笔记，什么是 RAG？"),
-        ("📊 整理表格", "整理 data/示例-销售数据.csv，并告诉我数据有什么问题"),
-        ("🌤 两地天气", "北京和上海今天天气怎么样？"),
-        ("🌐 联网查资料", "联网搜索：LangGraph 是什么？简单介绍"),
-    ]
-    st.caption("👋 欢迎！点下面的示例直接体验，或自己输入任务：")
-    scol = st.columns(len(SUGGESTIONS))
-    for col, (label, q) in zip(scol, SUGGESTIONS):
-        if col.button(label, key=f"sug_{label[:2]}", use_container_width=True):
-            st.session_state["_run_queue"] = st.session_state.get("_run_queue", []) + [(q, None)]
+    st.write("")
+    st.write("")
+    _hc = st.columns([1, 2, 1])
+    with _hc[1]:
+        st.markdown(
+            "<div style='text-align:center;font-size:64px;line-height:1.2'>🤖</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div style='text-align:center;font-size:22px;font-weight:600;color:#0F172A'>AI 工具调用小助手</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div style='text-align:center;color:#64748B;font-size:14px'>能查你的资料、看图、联网、调用工具帮你干活</div>",
+            unsafe_allow_html=True,
+        )
+        st.write("")
+        SUGGESTIONS = [
+            ("📚 问答我的笔记", "根据我的笔记，什么是 RAG？"),
+            ("🌤 天气对比", "北京和上海今天天气怎么样？"),
+            ("🌐 联网查询", "联网搜索：LangGraph 是什么？"),
+        ]
+        scol = st.columns(len(SUGGESTIONS))
+        for col, (label, q) in zip(scol, SUGGESTIONS):
+            if col.button(label, key=f"sug_{label[:2]}", use_container_width=True):
+                st.session_state["_run_queue"] = st.session_state.get("_run_queue", []) + [(q, None)]
+    st.write("")
+    st.write("")
+    st.write("")
 
 # ---- 编辑历史消息并从此处重发 ----
 _edit = st.session_state.get("_edit")
@@ -544,41 +581,26 @@ if _runq:
         _af = _entry[2] if len(_entry) > 2 else None
         run_ask(_p, _ip, _af)
 
-# ---- 附件（引用）区：只加入待发送，不自动处理 ----
-with st.popover("📎 附件", use_container_width=False):
-    st.caption("添加文件作为引用：不会立刻处理，输入文字回车后一起发送。")
-    if HAS_CHUNK:
-        try:
-            _picked = chunk_uploader(
-                label="选择文件", type=None, key="attach_chunk",
-                uploader_msg="点击选择文件，或拖拽到此处",
-            )
-            if _picked is not None and getattr(_picked, "name", None):
-                _fid = getattr(_picked, "file_id", None) or f"{_picked.name}:{len(_picked.getvalue())}"
-                if _fid not in st.session_state["_seen_files"]:
-                    st.session_state["_seen_files"].add(_fid)
-                    _save_attachment(_picked.name, _picked.getvalue())
-        except Exception:  # noqa: BLE001
-            pass
-    with st.expander("备用上传框", expanded=False):
-        fb = st.file_uploader("文件", type=None, accept_multiple_files=True, label_visibility="collapsed")
-        if fb:
-            for f in fb:
-                _fid2 = getattr(f, "file_id", None) or f"{f.name}:{f.size}"
-                if _fid2 not in st.session_state["_seen_files"]:
-                    st.session_state["_seen_files"].add(_fid2)
-                    _save_attachment(f.name, f.getvalue())
-
-_attachments = st.session_state.get("attachments") or []
-if _attachments:
-    for _idx, _a in enumerate(_attachments):
-        _ic = "🖼️" if _a["kind"] == "img" else "📎"
-        _r1, _r2 = st.columns([10, 1])
-        _r1.caption(f"{_ic} {_a['name']}")
-        if _r2.button("✖", key=f"att_del_{_idx}", help="移除该引用"):
-            _attachments.pop(_idx)
-            st.session_state["attachments"] = _attachments
-            st.rerun()
+# ---- 附件（引用）：一条拖放虚线区，点击或拖入即加入 ----
+st.caption("📎 点击选择，或把文件拖到下方区域（仅作为引用，回车时随消息发送）")
+_drop = st.file_uploader(
+    "附件引用", type=None, accept_multiple_files=True,
+    label_visibility="collapsed", key="attach_refs",
+)
+if _drop:
+    for _f in _drop:
+        _fid = getattr(_f, "file_id", None) or f"{_f.name}:{_f.size}"
+        if _fid not in st.session_state["_seen_files"]:
+            st.session_state["_seen_files"].add(_fid)
+            _save_attachment(_f.name, _f.getvalue())
+_att = st.session_state.get("attachments") or []
+if _att:
+    _names = "、".join(a["name"] for a in _att[:5]) + ("…" if len(_att) > 5 else "")
+    _rr1, _rr2 = st.columns([8, 2])
+    _rr1.caption(f"已引用 {len(_att)} 个：{_names}")
+    if _rr2.button("全部清除", key="btn_clear_atts", use_container_width=True):
+        st.session_state["attachments"] = []
+        st.rerun()
 
 # ---- 失败重试 ----
 if st.session_state.get("_retry"):

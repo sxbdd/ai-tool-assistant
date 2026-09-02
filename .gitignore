@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 密钥与环境变量（绝不提交）
+.env
+.streamlit/secrets.toml
+
+# 运行产物
+data/output/
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

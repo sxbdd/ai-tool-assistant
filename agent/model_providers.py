@@ -22,6 +22,7 @@ PROVIDERS: dict[str, dict] = {
         "model_env": "DEEPSEEK_MODEL",
         "default_model": "deepseek-chat",
         "supports_vision": False,
+        "models": ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash-vision-exp"],
     },
     "zhipu": {
         "label": "智谱 GLM",
@@ -30,6 +31,7 @@ PROVIDERS: dict[str, dict] = {
         "model_env": "ZHIPU_VISION_MODEL",
         "default_model": "glm-4v-flash",
         "supports_vision": True,
+        "models": ["glm-4v-flash", "glm-4.6v-flash", "glm-4.1v-thinking-flash", "glm-4v-plus"],
     },
     "qwen": {
         "label": "通义 Qwen",
@@ -38,6 +40,7 @@ PROVIDERS: dict[str, dict] = {
         "model_env": "QWEN_VISION_MODEL",
         "default_model": "qwen-vl-plus",
         "supports_vision": True,
+        "models": ["qwen-vl-plus", "qwen-vl-max", "qwen3-vl-flash"],
     },
     "openai": {
         "label": "OpenAI GPT",
@@ -46,6 +49,7 @@ PROVIDERS: dict[str, dict] = {
         "model_env": "OPENAI_MODEL",
         "default_model": "gpt-4o-mini",
         "supports_vision": True,
+        "models": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
     },
 }
 

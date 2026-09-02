@@ -22,27 +22,40 @@ ensure_dirs()
 
 st.set_page_config(page_title="AI 工具调用小助手", page_icon="🤖", layout="wide")
 st.title("🤖 AI 工具调用小助手")
-st.caption("Agent + Function Calling + RAG 知识库 + 识图：让大模型「查资料、看图、调工具」完成多步任务")
+st.caption("Agent + Function Calling + RAG 知识库 + 识图 + 联网搜索：让大模型「查资料、看图、查网、调工具」完成多步任务")
 
 # ============================================================ 侧栏
 with st.sidebar:
     st.header("⚙️ 模型设置")
     status = provider_status()
     main_provider = st.selectbox(
-        "主力对话模型",
-        list_providers(),
-        index=0,
-        format_func=lambda n: f"{n} · {PROVIDERS[n]['label']} · {status[n]}",
-        help="未配置 Key 的选项会报错，请在 .env 中补充对应 Key",
+        "① 主力对话：服务商", list_providers(), index=0,
+        format_func=lambda n: f"{n} · {status[n]}",
+        help="未配置 Key 的选项会报错，请在 .env 补充对应 Key",
     )
+    main_models = PROVIDERS[main_provider]["models"]
+    _env_main_model = os.getenv(PROVIDERS[main_provider]["model_env"], "")
+    main_model = st.selectbox(
+        "② 主力对话：具体模型", main_models,
+        index=main_models.index(_env_main_model) if _env_main_model in main_models else 0,
+        help="以该服务商实际可用型号为准；想用列表外的型号可直接改 .env 对应变量",
+    )
+    os.environ["DEFAULT_PROVIDER"] = main_provider
     vis_providers = [n for n in list_providers() if PROVIDERS[n]["supports_vision"]]
     if vis_providers:
         vision_provider = st.selectbox(
-            "识图模型（视觉桥）", vis_providers,
+            "③ 识图：服务商", vis_providers,
             index=vis_providers.index("zhipu") if "zhipu" in vis_providers else 0,
-            format_func=lambda n: f"{n} · {PROVIDERS[n]['label']} · {status[n]}",
+            format_func=lambda n: f"{n} · {status[n]}",
         )
-        os.environ["VISION_PROVIDER"] = vision_provider  # 运行时切换，analyze_image 即时生效
+        vis_models = PROVIDERS[vision_provider]["models"]
+        _env_vis_model = os.getenv(PROVIDERS[vision_provider]["model_env"], "")
+        vision_model = st.selectbox(
+            "④ 识图：具体模型", vis_models,
+            index=vis_models.index(_env_vis_model) if _env_vis_model in vis_models else 0,
+        )
+        os.environ["VISION_PROVIDER"] = vision_provider
+        os.environ[PROVIDERS[vision_provider]["model_env"]] = vision_model
 
     st.divider()
     st.header("📚 知识库管理")
@@ -136,7 +149,7 @@ def run_ask(prompt: str, img_bytes: bytes | None = None) -> None:
     with st.chat_message("assistant"):
         try:
             with st.spinner("Agent 正在思考并调用工具……"):
-                answer, trace = ask(prompt, lc_history, provider=main_provider)
+                answer, trace = ask(prompt, lc_history, provider=main_provider, model=main_model)
         except RuntimeError as exc:
             st.error(str(exc))
             answer, trace = None, []

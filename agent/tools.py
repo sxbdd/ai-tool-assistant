@@ -186,6 +186,18 @@ def analyze_image(raw_path: str, question: str | None = None) -> str:
         return f"识图失败：{exc}"
 
 
+def web_search(query: str, max_results: int = 5) -> str:
+    """(tool) 搜索公开网页信息（Bing 免费 / Tavily 可选）。"""
+    from .websearch import web_search as _ws
+    return _ws(query, max_results)
+
+
+def open_webpage(url: str, max_chars: int = 3000) -> str:
+    """(tool) 打开网页读取正文文本。"""
+    from .websearch import open_webpage as _ow
+    return _ow(url, max_chars)
+
+
 # ---------------------------------------------------------------- 注册表（Function Calling schema）
 
 TOOLS: list[dict] = [
@@ -269,6 +281,36 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "搜索公开互联网信息，返回标题/链接/摘要。当用户询问新闻、最新信息、知识库没有的内容或需要外部资料时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索关键词，尽量具体，如：2026 年 AI Agent 最新进展"},
+                    "max_results": {"type": "integer", "description": "返回条数，默认 5"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_webpage",
+            "description": "打开一个网页并读取正文文本。当搜索结果摘要不够、需要细读某篇文章时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "网页完整链接（http/https）"},
+                    "max_chars": {"type": "integer", "description": "最多读取字符数，默认 3000"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
 # 工具名 -> 实现函数 的映射
@@ -278,6 +320,8 @@ TOOL_IMPL: dict[str, object] = {
     "tidy_spreadsheet": tidy_spreadsheet,
     "search_knowledge_base": search_knowledge_base,
     "analyze_image": analyze_image,
+    "web_search": web_search,
+    "open_webpage": open_webpage,
 }
 
 

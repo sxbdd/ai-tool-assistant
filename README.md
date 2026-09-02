@@ -13,6 +13,7 @@
 | 🛠️ 工具调用 | 读文件 / 查天气(Open-Meteo) / 整理表格(pandas) | "整理 data/示例-销售数据.csv" |
 | 📚 RAG 知识库 | 上传/导入笔记→切分→向量化(Chroma)→检索**带出处**回答 | "根据我的笔记解释 RAG" |
 | 🖼️ 识图 | 视觉桥：文本模型不会看图？调免费视觉模型转成描述 | 上传图片问"里面写了什么" |
+| 🌐 联网搜索 | 搜索公开网页(Bing 免费/Tavily 可选)并读取网页正文 | "LangGraph 最近有什么新教程？" |
 | 🔀 多模型切换 | DeepSeek / 智谱 / 通义 / OpenAI 下拉即换（OpenAI 兼容协议） | 侧栏切换主力与识图模型 |
 | 📁 本地文件夹导入 | 填绝对路径→只读扫描→复制进沙盒→批量入库 | 导入整文件夹课件 |
 | 🛡️ 安全边界 | 写入只在 data/ 沙盒；Key 只存 .env；越界检索有相似度阈值 | — |
@@ -29,7 +30,7 @@ AI 工具调用小助手/
 ├── DESIGN.md              # 设计说明书（架构/里程碑/验收/边界）
 ├── agent/
 │   ├── graph.py           # LangGraph 编排：agent↔tools 条件循环
-│   ├── tools.py           # 5 个工具 + Function Calling 注册表
+│   ├── tools.py           # 7 个工具 + Function Calling 注册表
 │   ├── model_providers.py # 多模型抽象层（Provider 注册表）
 │   └── config.py          # .env 配置
 ├── rag/                   # RAG 子系统

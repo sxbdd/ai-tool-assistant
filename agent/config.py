@@ -36,6 +36,10 @@ QWEN_VISION_MODEL = os.getenv("QWEN_VISION_MODEL", "qwen-vl-plus").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
+# ---- 联网搜索 ----
+WEB_SEARCH_BACKEND = os.getenv("WEB_SEARCH_BACKEND", "bing").strip().lower()  # bing / tavily
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()  # 可选：更稳的搜索 API
+
 MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))
 
 

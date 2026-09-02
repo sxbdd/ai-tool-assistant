@@ -141,6 +141,51 @@ def tidy_spreadsheet(raw_path: str, output_name: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def search_knowledge_base(query: str, top_k: int = 4) -> str:
+    """(tool) 检索本地知识库，返回带出处的相关片段。"""
+    from rag.search import search_knowledge_base as _kb_search
+    try:
+        top_k = max(1, int(top_k))
+    except (TypeError, ValueError):
+        top_k = 4
+    return _kb_search(query, top_k)
+
+
+def analyze_image(raw_path: str, question: str | None = None) -> str:
+    """(tool) 视觉桥：让免费视觉模型描述一张图片的内容。"""
+    import base64
+
+    from langchain_core.messages import HumanMessage
+
+    from .model_providers import create_vision_model
+    from rag.config import IMAGE_EXT
+
+    p = _resolve(raw_path)
+    if not p.exists():
+        return f"图片不存在：{p}。请确认路径（上传的图片在 data/uploads/ 下）。"
+    if p.suffix.lower() not in IMAGE_EXT:
+        return f"不支持的图片格式：{p.suffix}（支持 {'/'.join(sorted(IMAGE_EXT))}）"
+    if p.stat().st_size > 10 * 1024 * 1024:
+        return "图片过大（超过 10MB），请压缩后重试。"
+    mime = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp",
+    }[p.suffix.lower()]
+    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    data_url = f"data:{mime};base64,{b64}"
+    try:
+        llm = create_vision_model()
+        text = question or "请详细描述这张图片的内容，包括图中的文字、场景与关键信息。"
+        msg = HumanMessage(content=[
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ])
+        resp = llm.invoke([msg])
+        return str(resp.content or "（模型未返回内容）")
+    except Exception as exc:  # noqa: BLE001
+        return f"识图失败：{exc}"
+
+
 # ---------------------------------------------------------------- 注册表（Function Calling schema）
 
 TOOLS: list[dict] = [
@@ -194,6 +239,36 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_knowledge_base",
+            "description": "检索本地知识库（用户上传/导入的资料、笔记、文档），返回带出处的相关片段。当用户询问资料、知识库、笔记、文档中的内容时必须先用它。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "要检索的问题或关键词"},
+                    "top_k": {"type": "integer", "description": "返回片段数，默认 4"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_image",
+            "description": "识别并描述一张图片的内容（图中文字、场景等）。当用户上传图片或询问图片内容时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "raw_path": {"type": "string", "description": "图片路径，如 data/uploads/示例.png"},
+                    "question": {"type": "string", "description": "可选：针对图片的具体问题"},
+                },
+                "required": ["raw_path"],
+            },
+        },
+    },
 ]
 
 # 工具名 -> 实现函数 的映射
@@ -201,6 +276,8 @@ TOOL_IMPL: dict[str, object] = {
     "read_file": read_file,
     "get_weather": get_weather,
     "tidy_spreadsheet": tidy_spreadsheet,
+    "search_knowledge_base": search_knowledge_base,
+    "analyze_image": analyze_image,
 }
 
 

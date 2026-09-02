@@ -1,7 +1,21 @@
+# ── Agent 编排 ────────────────────────────────
 langgraph>=0.2.60
 langchain-core>=0.3.0
 langchain-openai>=0.2.0
 streamlit>=1.40.0
+
+# ── 数据处理 ──────────────────────────────────
 pandas>=2.2.0
 openpyxl>=3.1.0
+
+# ── RAG 知识库 ────────────────────────────────
+chromadb>=1.5.0
+sentence-transformers>=3.0.0
+pypdf>=5.0.0
+
+# ── 配置 ──────────────────────────────────────
 python-dotenv>=1.0.0
+
+# 注：embedding 模型 BAAI/bge-small-zh-v1.5 首次使用自动从 HuggingFace 下载
+#     国内可设 HF_ENDPOINT=https://hf-mirror.com；走代理直连时若失败，
+#     可设 HF_HUB_DISABLE_XET=1 后重试。

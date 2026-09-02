@@ -12,16 +12,11 @@ from operator import add
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from .config import (
-    DEEPSEEK_API_KEY,
-    DEEPSEEK_BASE_URL,
-    DEEPSEEK_MODEL,
-    check_api_key,
-)
+from .model_providers import create_chat_model
+from .config import check_api_key
 from .tools import TOOLS, run_tool
 
 SYSTEM_PROMPT = """你是「AI 工具调用小助手」，一个会调用工具完成任务的智能体（Agent）。
@@ -29,10 +24,16 @@ SYSTEM_PROMPT = """你是「AI 工具调用小助手」，一个会调用工具�
 你可以使用以下工具：
 1. read_file：读取项目内的文本文件（如 data/示例-待办.txt）；
 2. get_weather：查询任意城市的实时天气；
-3. tidy_spreadsheet：整理 CSV / Excel 表格，清理空行和重复行，并保存为新文件。
+3. tidy_spreadsheet：整理 CSV / Excel 表格，清理空行和重复行，并保存为新文件；
+4. search_knowledge_base：检索本地知识库（用户上传/导入的资料、笔记、文档），返回带来源的片段；
+5. analyze_image：查看用户上传的图片内容。
 
 工作要求：
 - 先理解用户意图，再判断需要调用哪些工具、按什么顺序调用（多步任务要一步一步完成）；
+- 用户询问资料、笔记、文档、知识库里的内容时，必须先调用 search_knowledge_base 检索；
+- 回答只能基于检索片段，片段不足时明确说「知识库中没有找到相关内容」，不要编造；
+- 引用资料时用（来源：文件名 · 页码）标注；
+- 用户上传图片想让你看时，调用 analyze_image 获取图片描述后再回答；
 - 工具返回结果后，基于结果给用户完整、清晰的中文答复；
 - 一次可并行调用多个互不依赖的工具（例如同时查两个城市的天气）；
 - 不要编造工具结果，工具查不到就如实告诉用户。
@@ -46,18 +47,12 @@ class AgentState(TypedDict):
     trace: Annotated[list[str], add]          # 工具调用轨迹（供网页端展示）
 
 
-def create_agent():
+def create_agent(provider: str | None = None, model: str | None = None):
     """构建并编译 LangGraph Agent。"""
     check_api_key()
 
-    # DeepSeek 使用 OpenAI 兼容协议，langchain-openai 可直接对接
-    llm = ChatOpenAI(
-        model=DEEPSEEK_MODEL,
-        api_key=DEEPSEEK_API_KEY,
-        base_url=DEEPSEEK_BASE_URL,
-        temperature=0.2,
-        timeout=60,
-    )
+    # 模型走抽象层 model_providers：可在 .env / UI 切换服务商与模型
+    llm = create_chat_model(provider=provider, model=model)
     llm_with_tools = llm.bind_tools(TOOLS)
 
     def call_model(state: AgentState) -> dict:
@@ -99,9 +94,9 @@ def create_agent():
     return builder.compile()
 
 
-def ask(question: str, history: list | None = None) -> tuple[str, list[str]]:
+def ask(question: str, history: list | None = None, provider: str | None = None, model: str | None = None) -> tuple[str, list[str]]:
     """对外接口：向 Agent 提问，返回 (最终回答, 工具调用轨迹)。"""
-    graph = create_agent()
+    graph = create_agent(provider=provider, model=model)
     init_messages: list = list(history or [])
     init_messages.append(HumanMessage(content=question))
     result = graph.invoke(

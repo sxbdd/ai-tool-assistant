@@ -1,57 +1,131 @@
-"""网页对话界面（Streamlit）。
+"""网页对话界面（Streamlit）v2.1
+mini-Codex：多模型切换 + 文件上传 + 本地文件夹导入 + RAG 知识库 + 免费识图。
 
-启动方式（在项目根目录）：
-    streamlit run app.py
+启动：python -m streamlit run app.py
 """
 from __future__ import annotations
+
+import os
+from pathlib import Path
 
 import streamlit as st
 from langchain_core.messages import AIMessage as LCAIMessage
 from langchain_core.messages import HumanMessage
 
 from agent.graph import ask
+from agent.model_providers import PROVIDERS, list_providers, provider_status
+from rag.config import RAW_DIR, SUPPORTED_EXT, UPLOAD_DIR, ensure_dirs
+from rag.ingest import ingest_file, ingest_folder
+from rag.store import list_docs, remove_doc
 
-st.set_page_config(page_title="AI 工具调用小助手", page_icon="🤖", layout="centered")
+ensure_dirs()
 
+st.set_page_config(page_title="AI 工具调用小助手", page_icon="🤖", layout="wide")
 st.title("🤖 AI 工具调用小助手")
-st.caption("Agent + Function Calling：让 DeepSeek 自动调用工具，完成「读文件 / 查天气 / 整理表格」等多步任务")
+st.caption("Agent + Function Calling + RAG 知识库 + 识图：让大模型「查资料、看图、调工具」完成多步任务")
 
+# ============================================================ 侧栏
 with st.sidebar:
-    st.header("🧰 可用工具")
-    st.markdown(
-        "- 📄 `read_file`：读取项目内文本文件\n"
-        "- 🌤️ `get_weather`：查城市实时天气（Open-Meteo，免费）\n"
-        "- 📊 `tidy_spreadsheet`：整理 CSV/XLSX 并输出报告"
+    st.header("⚙️ 模型设置")
+    status = provider_status()
+    main_provider = st.selectbox(
+        "主力对话模型",
+        list_providers(),
+        index=0,
+        format_func=lambda n: f"{n} · {PROVIDERS[n]['label']} · {status[n]}",
+        help="未配置 Key 的选项会报错，请在 .env 中补充对应 Key",
     )
-    st.header("💡 试试这样说")
-    st.markdown(
-        "- 帮我读一下 `data/示例-待办.txt`\n"
-        "- 北京和上海今天天气怎么样？\n"
-        "- 整理 `data/示例-销售数据.csv`，看看数据有什么问题"
-    )
+    vis_providers = [n for n in list_providers() if PROVIDERS[n]["supports_vision"]]
+    if vis_providers:
+        vision_provider = st.selectbox(
+            "识图模型（视觉桥）", vis_providers,
+            index=vis_providers.index("zhipu") if "zhipu" in vis_providers else 0,
+            format_func=lambda n: f"{n} · {PROVIDERS[n]['label']} · {status[n]}",
+        )
+        os.environ["VISION_PROVIDER"] = vision_provider  # 运行时切换，analyze_image 即时生效
 
+    st.divider()
+    st.header("📚 知识库管理")
+    st.caption("支持：" + " / ".join(sorted(SUPPORTED_EXT)) + "；单文件 ≤20MB；文档复制进沙盒 data/kb/ 后入库")
+
+    up_files = st.file_uploader(
+        "① 上传文件入库", type=[e.lstrip(".") for e in sorted(SUPPORTED_EXT)],
+        accept_multiple_files=True,
+    )
+    if up_files:
+        if st.button("② 上传并入库", use_container_width=True):
+            ok_cnt = err_cnt = 0
+            for f in up_files:
+                if f.size > 20 * 1024 * 1024:
+                    st.error(f"{f.name} 超过 20MB，已跳过")
+                    err_cnt += 1
+                    continue
+                dest = UPLOAD_DIR / f.name
+                dest.write_bytes(f.getvalue())
+                r = ingest_file(dest)
+                if "error" in r:
+                    st.error(f"{f.name}：{r['error']}")
+                    err_cnt += 1
+                else:
+                    st.success(f"{f.name} -> {r.get('chunks', 0)} 个片段")
+                    ok_cnt += 1
+            st.caption(f"本次：成功 {ok_cnt}，失败 {err_cnt}")
+
+    st.markdown("**③ 导入本地文件夹（绝对路径）**")
+    folder_path = st.text_input("文件夹路径", placeholder="如 D:\\我的笔记", label_visibility="collapsed")
+    if folder_path.strip() and st.button("④ 扫描并导入", use_container_width=True):
+        folder = Path(folder_path.strip())
+        if not folder.is_dir():
+            st.error(f"不是有效文件夹：{folder}")
+        else:
+            files = [x for x in folder.rglob("*") if x.is_file() and x.suffix.lower() in SUPPORTED_EXT]
+            st.info(f"共扫描到 {len(files)} 个支持的文件，正在复制并入库……")
+            results = ingest_folder(folder)
+            chunks = sum(r.get("chunks", 0) for r in results if "error" not in r)
+            errors = [r for r in results if "error" in r]
+            st.success(f"完成：入库 {chunks} 个片段 / {len(results) - len(errors)} 个文件")
+            for r in errors:
+                st.warning(f"{r.get('doc_name', '')}：{r['error']}")
+    st.caption("安全说明：只读你的原文件夹，文件会复制到项目沙盒 data/kb/raw/，不改动原目录。")
+
+    docs = list_docs()
+    if docs:
+        st.divider()
+        st.markdown(f"**已入库文档（{len(docs)}）**")
+        st.dataframe(docs, use_container_width=True, hide_index=True)
+        sel = st.multiselect("选择要删除的文档（仅移除向量索引）", [d["doc_name"] for d in docs])
+        if sel and st.button("删除选中", use_container_width=True):
+            for n in sel:
+                remove_doc(n)
+            st.rerun()
+    else:
+        st.caption("知识库为空：请上传文件或导入本地文件夹。")
+
+# ============================================================ 主区
 if "history" not in st.session_state:
-    st.session_state.history = []   # [{"role", "content", "trace"}]
+    st.session_state.history = []  # [{role, content, trace}]
 
 
-def render_history() -> None:
+def render_messages() -> None:
     for item in st.session_state.history:
         with st.chat_message(item["role"]):
+            if item.get("img"):
+                st.image(item["img"], width=180)
             st.markdown(item["content"])
             if item.get("trace"):
-                with st.expander("🧰 工具调用过程", expanded=False):
-                    for step in item["trace"]:
-                        st.markdown(step)
+                with st.expander("🧰 工具调用过程"):
+                    for s in item["trace"]:
+                        st.markdown(s)
 
 
-render_history()
-
-if prompt := st.chat_input("输入你的任务，例如：整理 data/示例-销售数据.csv"):
+def run_ask(prompt: str, img_bytes: bytes | None = None) -> None:
+    """把用户消息交给 Agent，展示最终回答与工具轨迹。"""
     with st.chat_message("user"):
+        if img_bytes:
+            st.image(img_bytes, width=180)
         st.markdown(prompt)
-    st.session_state.history.append({"role": "user", "content": prompt, "trace": []})
+    st.session_state.history.append({"role": "user", "content": prompt})
 
-    # 把历史转换为 LangChain 消息格式，作为上下文传给 Agent
     lc_history: list = []
     for item in st.session_state.history[:-1]:
         if item["role"] == "user":
@@ -62,16 +136,48 @@ if prompt := st.chat_input("输入你的任务，例如：整理 data/示例-销
     with st.chat_message("assistant"):
         try:
             with st.spinner("Agent 正在思考并调用工具……"):
-                answer, trace = ask(prompt, lc_history)
+                answer, trace = ask(prompt, lc_history, provider=main_provider)
         except RuntimeError as exc:
             st.error(str(exc))
+            answer, trace = None, []
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"出错了：{exc}")
             answer, trace = None, []
         if answer:
             st.markdown(answer)
             if trace:
-                with st.expander("🧰 工具调用过程", expanded=True):
-                    for step in trace:
-                        st.markdown(step)
+                with st.expander("🧰 工具调用过程", expanded=len(trace) > 1):
+                    for s in trace:
+                        st.markdown(s)
             st.session_state.history.append(
                 {"role": "assistant", "content": answer, "trace": trace}
             )
+
+
+render_messages()
+
+# ---- 图片识图 ----
+with st.container(border=True):
+    img_file = st.file_uploader(
+        "🖼️ 上传图片让 AI 识别（可选）", type=["png", "jpg", "jpeg", "gif", "webp"], key="img_upload"
+    )
+    if img_file is not None:
+        col_prev, col_btn = st.columns([1, 2])
+        with col_prev:
+            st.image(img_file.getvalue(), width=180)
+        with col_btn:
+            if st.button("🔍 让 AI 识别这张图片", use_container_width=True):
+                dest = UPLOAD_DIR / img_file.name
+                dest.write_bytes(img_file.getvalue())
+                run_ask(
+                    f"请调用 analyze_image 工具分析 data/uploads/{img_file.name} 这张图片，"
+                    "告诉我图片里有什么，包括所有文字。",
+                    img_bytes=img_file.getvalue(),
+                )
+
+# ---- 对话输入 ----
+prompt = st.chat_input(
+    "试试：根据我的笔记解释 RAG 是什么｜北京今天天气怎么样？｜整理 data/示例-销售数据.csv"
+)
+if prompt:
+    run_ask(prompt)

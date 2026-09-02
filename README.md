@@ -1,103 +1,96 @@
-# AI 工具调用小助手（Agent + Function Calling）
+# AI 工具调用小助手（mini-Codex · Agent + RAG + 识图）
 
-让大模型（DeepSeek）**学会调用工具**，自动完成多步任务：读文件、查天气、整理表格，并通过网页对话使用。
+一个"会查资料、会看图、会调工具、多模型可切换"的网页智能体，尽量贴近 Codex 的
+**决策(模型) + 执行(工具) + 循环(LangGraph) + 安全(沙盒)** 运行思路。
 
-> 一句话：这是一个从零手写的 **Agent 智能体项目**，核心是 **Function Calling（函数调用）** —— 大模型不直接执行操作，而是"决定调哪个工具、传什么参数"，由本地 Python 真正执行，安全可控、过程可解释。
-
----
+> 当前版本 v2.1：Function Calling 多工具 + RAG 知识库（带出处）+ 免费识图（视觉桥）+ 本地文件夹导入。
+> 详细设计见 [DESIGN.md](DESIGN.md)。
 
 ## ✨ 功能
 
-| 工具 | 作用 | 示例指令 |
+| 能力 | 说明 | 示例 |
 |---|---|---|
-| `read_file` | 读取项目内文本文件 | "帮我读一下 `data/示例-待办.txt`" |
-| `get_weather` | 查询城市实时天气（Open-Meteo 免费接口） | "北京和上海今天天气怎么样？" |
-| `tidy_spreadsheet` | 整理 CSV/Excel：清空行、去重、保存新文件并输出摘要 | "整理 `data/示例-销售数据.csv`" |
-
-- **多步任务自动编排**：一次提问可连续多次调用工具（Agent 循环），例如"读待办清单 → 逐个查天气 → 汇总回答"。
-- **网页对话界面**：Streamlit 聊天窗口，能展开查看每次工具调用过程，学习/演示直观。
-- **安全边界**：工具只允许访问项目目录内文件，不修改应用数据与系统文件。
+| 🛠️ 工具调用 | 读文件 / 查天气(Open-Meteo) / 整理表格(pandas) | "整理 data/示例-销售数据.csv" |
+| 📚 RAG 知识库 | 上传/导入笔记→切分→向量化(Chroma)→检索**带出处**回答 | "根据我的笔记解释 RAG" |
+| 🖼️ 识图 | 视觉桥：文本模型不会看图？调免费视觉模型转成描述 | 上传图片问"里面写了什么" |
+| 🔀 多模型切换 | DeepSeek / 智谱 / 通义 / OpenAI 下拉即换（OpenAI 兼容协议） | 侧栏切换主力与识图模型 |
+| 📁 本地文件夹导入 | 填绝对路径→只读扫描→复制进沙盒→批量入库 | 导入整文件夹课件 |
+| 🛡️ 安全边界 | 写入只在 data/ 沙盒；Key 只存 .env；越界检索有相似度阈值 | — |
 
 ## 🧱 技术栈
 
-- Python 3.12
-- **LangGraph**：状态机编排 Agent（agent 节点 ↔ tools 节点循环）
-- **langchain-openai**：OpenAI 兼容协议对接 **DeepSeek API**（`deepseek-chat`）
-- **Streamlit**：网页对话界面
-- **pandas / openpyxl**：表格读取与整理
-- 天气数据：Open-Meteo（免费，无需 Key）
+Python 3.12 · LangGraph · langchain-openai · DeepSeek API · Chroma · sentence-transformers(bge-small-zh-v1.5) · Streamlit · pandas
 
 ## 📁 项目结构
 
 ```
 AI 工具调用小助手/
-├── app.py                 # Streamlit 网页对话入口
+├── app.py                 # Streamlit 网页（模型切换/知识库管理/识图/对话）
+├── DESIGN.md              # 设计说明书（架构/里程碑/验收/边界）
 ├── agent/
-│   ├── config.py          # 读取 .env（DeepSeek Key 等配置）
-│   ├── tools.py           # 工具实现 + Function Calling schema 注册表
-│   └── graph.py           # LangGraph 状态机：模型/工具节点 + 条件路由
-├── data/                  # 示例数据（Agent 可读写的安全目录）
-│   ├── 示例-待办.txt
-│   ├── 示例-销售数据.csv
-│   └── output/            # 工具整理后的产物（自动生成，已 gitignore）
-├── tests/test_tools.py    # 离线单元测试
-└── requirements.txt
+│   ├── graph.py           # LangGraph 编排：agent↔tools 条件循环
+│   ├── tools.py           # 5 个工具 + Function Calling 注册表
+│   ├── model_providers.py # 多模型抽象层（Provider 注册表）
+│   └── config.py          # .env 配置
+├── rag/                   # RAG 子系统
+│   ├── ingest.py          # 解析(PDF按页)→切分(递归+重叠)→入库
+│   ├── store.py           # Chroma 封装 + embedding
+│   ├── search.py          # 检索工具（相似度阈值过滤）
+│   └── config.py
+├── data/
+│   ├── 示例-待办.txt / 示例-销售数据.csv / 示例-课程笔记.md
+│   ├── uploads/  kb/      # 上传与知识库（沙盒，gitignore）
+│   └── output/            # 表格整理产物（gitignore）
+├── scripts/e2e_test.py    # 端到端冒烟（真调 DeepSeek）
+└── tests/                 # 离线单元测试（9 个）
 ```
 
 ## 🚀 快速开始
 
 ```powershell
-# 1) 准备虚拟环境（本机已建好，位于 D:\Dev\Env\py_venv\ai-tool-assistant）
-#    若在其他电脑：python -m venv .venv 后激活
+# 1) 依赖（本机虚拟环境已装好；新机器先建 venv 再装）
+python -m venv .venv
+pip install -r requirements.txt
 
-# 2) 安装依赖
-& 'D:\Dev\Env\py_venv\ai-tool-assistant\Scripts\python.exe' -m pip install -r requirements.txt
+# 2) 配置 Key：复制 .env.example 为 .env 并填写
+#    - DEEPSEEK_API_KEY：主力对话（必填）
+#    - ZHIPU_API_KEY / DASHSCOPE_API_KEY：识图（免费档，任一即可，视觉桥用）
 
-# 3) 配置 DeepSeek API Key
-#    复制 .env.example 为 .env，填入 Key（申请：https://platform.deepseek.com）
-
-# 4) 启动网页对话
-& 'D:\Dev\Env\py_venv\ai-tool-assistant\Scripts\python.exe' -m streamlit run app.py
+# 3) 启动网页
+streamlit run app.py
 ```
 
-浏览器会自动打开 http://localhost:8501 ，试试输入：
-- `帮我读一下 data/示例-待办.txt`
-- `北京和上海今天天气怎么样？`
-- `整理 data/示例-销售数据.csv，看看数据有什么问题`
+打开 http://localhost:8501 后可试：
+- `根据我的笔记，什么是 RAG？`（会先自动把示例笔记入库，然后检索回答）
+- 上传一张图 → `让 AI 识别这张图片`
+- `北京和上海今天天气怎么样？`、`整理 data/示例-销售数据.csv`
 
-## 🧠 Agent 是怎么工作的（面试/学习要点）
+### embedding 模型下载（首次）
+知识库向量化用 `BAAI/bge-small-zh-v1.5`，首次使用自动从 HuggingFace 下载（约 100MB）。
+- 国内可设 `HF_ENDPOINT=https://hf-mirror.com`；
+- 走代理直连失败时设 `HF_HUB_DISABLE_XET=1` 再试。
 
-1. **工具注册**：把每个工具的"说明书"（名称、功能、参数 JSON Schema）告诉模型 —— `agent/tools.py` 里的 `TOOLS`。
-2. **模型决策**：DeepSeek 看完你的话 + 工具说明书，返回 `tool_calls`（决定调哪个工具、传什么参数）。
-3. **本地执行**：LangGraph 的 `tools` 节点真正运行 Python 函数，结果作为 `ToolMessage` 回传。
-4. **循环直到完成**：模型看到工具结果后继续推理——还要调工具就再进 `tools` 节点，不需要了就输出最终答案（LangGraph 条件路由控制）。
-
-```
-用户提问
-   │
-   ▼
-[agent] 模型判断 ──要调工具──► [tools] 本地执行
-   │  ▲                            │
-   │  └───────── 结果回传 ──────────┘
-   ▼ 不需要调工具
-最终回答
-```
-
-## ✅ 运行测试（离线，不需要 Key）
+## ✅ 测试
 
 ```powershell
-& 'D:\Dev\Env\py_venv\ai-tool-assistant\Scripts\python.exe' -m unittest discover -s tests -v
+# 离线单测（不需要 API Key）：切分/入库/检索/阈值 + 老工具回归
+python -m unittest discover -s tests -v
+
+# 端到端（需要 .env 的 DeepSeek Key）：工具调用 + RAG + 识图
+python scripts/e2e_test.py
 ```
 
-## 🗺️ 后续规划（Roadmap）
+## 🧠 Agent 怎么工作（面试要点）
 
-- [ ] 接入 LangGraph 记忆（checkpointer），支持多轮上下文记忆
-- [ ] 增加 RAG 知识库问答（参考 lifepilot-agent）
-- [ ] 增加"网页搜索 / 生成图表"等更多工具
-- [ ] 支持本地大模型（Ollama）切换，降低成本
+1. 工具注册：`tools.py` 把每个工具写成 JSON Schema 说明书；
+2. 模型决策：DeepSeek 返回 `tool_calls`（调哪个工具、传什么参数）；
+3. 本地执行：LangGraph `tools` 节点跑真 Python 函数，结果回传；
+4. 循环：还要调工具就再进 tools，不需要就输出最终答案；
+5. RAG：检索片段带（来源：文件·页码），回答只依据片段并标注，防幻觉（还有相似度阈值兜底）；
+6. 识图：视觉桥 `analyze_image` 调免费视觉模型把图转文字，主模型再回答。
 
 ## 📚 参考学习资料
 
-- datawhalechina/hello-agents ——《从零开始构建智能体》中文教程
-- 2182977liu-bit/awesome-ai-agent-learning —— 不依赖框架从零搭 Agent 的保姆级中文教程
-- AFPyannian/lifepilot-agent —— LangGraph + Streamlit + DeepSeek + RAG 的中文 Agent 参考实现
+- datawhalechina/hello-agents、datawhalechina/llm-universe
+- langchain-ai/rag-from-scratch
+- AFPyannian/lifepilot-agent（LangGraph+Streamlit+DeepSeek+RAG 参考）

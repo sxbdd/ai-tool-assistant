@@ -20,3 +20,6 @@ Thumbs.db
 # 运行产物（上传/知识库）
 data/uploads/
 data/kb/
+
+# Codex 应用临时目录
+.agents/

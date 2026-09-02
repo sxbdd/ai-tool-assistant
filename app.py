@@ -31,11 +31,6 @@ try:  # 中文文件上传组件（GracefulTabby, MIT）
 except Exception:  # noqa: BLE001
     HAS_CHUNK = False
 
-try:  # 图片点击缩放组件（vgilabert94, MIT）
-    from streamlit_image_zoom import image_zoom
-    HAS_ZOOM = True
-except Exception:  # noqa: BLE001
-    HAS_ZOOM = False
 
 st.set_page_config(page_title="AI 工具调用小助手", page_icon="🤖", layout="wide")
 
@@ -149,37 +144,6 @@ def export_history_md() -> str:
                 lines.append(f"- {s}\n")
     return "\n".join(lines)
 
-def fmt_size(n: int) -> str:
-    if n < 1024:
-        return f"{n} B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.1f} KB"
-    return f"{n / 1024 / 1024:.1f} MB"
-
-
-EXT_ICON = {
-    ".png": "🖼️", ".jpg": "🖼️", ".jpeg": "🖼️", ".gif": "🖼️", ".webp": "🖼️",
-    ".pdf": "📕", ".txt": "📄", ".md": "📝", ".csv": "📊", ".xlsx": "📊",
-    ".xls": "📊", ".docx": "📘", ".py": "🐍",
-}
-
-
-def icon_of(p: Path) -> str:
-    return EXT_ICON.get(p.suffix.lower(), "📎")
-
-
-def is_image(p: Path) -> bool:
-    return p.suffix.lower() in IMAGE_EXT
-
-
-def list_upload_files() -> list[Path]:
-    if not UPLOAD_DIR.exists():
-        return []
-    files = [p for p in UPLOAD_DIR.iterdir() if p.is_file()]
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return files
-
-
 def save_upload(name: str, data: bytes) -> Path:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     p = UPLOAD_DIR / name
@@ -236,20 +200,29 @@ def _message_actions(i: int, item: dict) -> None:
 
 
 def _render_files(files: list) -> None:
-    """在消息里展示文件引用：图片小缩略图，其余仅文件名（不展开内容）。"""
+    """展示文件引用：图片小缩略图（优先用内存 bytes），其余仅文件名。"""
     for f in files:
-        if f.get("kind") == "img" and Path(f.get("path", "")).exists():
-            st.image(f["path"], width=90)
+        if f.get("kind") == "img":
+            if f.get("data"):
+                st.image(f["data"], width=90)
+            elif f.get("path") and Path(f["path"]).exists():
+                st.image(f["path"], width=90)
+            else:
+                st.caption(f"🖼️ {f.get('name', '')}")
         else:
             st.caption(f"📎 {f.get('name', '')}")
 
 
 def _save_attachment(name: str, data: bytes) -> None:
-    """静默保存上传文件并把引用加入当前消息（不弹提示、不自动处理）。"""
-    fp = save_upload(name, data)
-    st.session_state.setdefault("attachments", []).append(
-        {"name": fp.name, "path": str(fp), "kind": "img" if fp.suffix.lower() in IMAGE_EXT else "doc"}
-    )
+    """把文件作为临时引用加入当前消息：仅内存、不落盘；同名同大小视为同一文件，忽略。"""
+    atts = st.session_state.setdefault("attachments", [])
+    nkey = (name.lower(), len(data))
+    if any((a["name"].lower(), len(a["data"])) == nkey for a in atts):
+        return
+    atts.append({
+        "name": name, "data": data,
+        "kind": "img" if Path(name).suffix.lower() in IMAGE_EXT else "doc",
+    })
 
 
 def _refs_text(files: list) -> str:
@@ -279,6 +252,18 @@ def render_messages() -> None:
 
 
 def run_ask(prompt: str, img_path: str | None = None, attachments: list | None = None) -> None:
+    import shutil
+    import tempfile
+
+    tmp_dir: Path | None = None
+    tmp_paths: list = []
+    if attachments:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="ai_attach_"))
+        for a in attachments:
+            fname = Path(a["name"]).name
+            fp = tmp_dir / fname
+            fp.write_bytes(a["data"])
+            tmp_paths.append({"name": fname, "kind": a.get("kind", "doc"), "path": str(fp)})
     with st.chat_message("user"):
         if img_path and Path(img_path).exists():
             st.image(img_path, width=120)
@@ -286,19 +271,19 @@ def run_ask(prompt: str, img_path: str | None = None, attachments: list | None =
             _render_files(attachments)
         st.markdown(prompt)
     model_prompt = prompt
-    if attachments:
-        model_prompt = prompt + "\n\n（本消息附带了文件引用，请按需查看/处理）\n" + _refs_text(attachments)
+    if tmp_paths:
+        model_prompt = prompt + "\n\n（本消息附带了文件引用，请按需查看/处理）\n" + _refs_text(tmp_paths)
     item = {"role": "user", "content": model_prompt, "display": prompt, "trace": []}
     if img_path:
         item["img_path"] = img_path
     if attachments:
-        item["files"] = [{"name": a["name"], "path": a["path"], "kind": a["kind"]} for a in attachments]
+        item["files"] = [{"name": a["name"], "kind": a["kind"]} for a in attachments]
     st.session_state["history"].append(item)
 
     lc_history: list = []
     for it in st.session_state["history"][:-1]:
         if it["role"] == "user":
-            lc_history.append(HumanMessage(content=it["content"]))
+            lc_history.append(HumanMessage(content=it.get("display") or it["content"]))
         else:
             lc_history.append(LCAIMessage(content=it["content"]))
 
@@ -344,6 +329,8 @@ def run_ask(prompt: str, img_path: str | None = None, attachments: list | None =
                 {"role": "assistant", "content": buf, "trace": trace_lines}
             )
     _save_current()
+    if tmp_dir is not None:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ============================================================ 侧栏
@@ -437,52 +424,6 @@ with st.sidebar:
             os.environ["VISION_PROVIDER"] = vision_provider
             os.environ[PROVIDERS[vision_provider]["model_env"]] = vision_model
 
-    files = list_upload_files()
-    with st.expander(f"📁 文件库（{len(files)}）", expanded=False):
-        st.caption("文件库 = 上传文件的存放与管理（预览 / 入库知识库 / 删除）。要让 AI 处理文件，请在对话区用「➕ 附件」上传，会自动进入当前对话。")
-        if not files:
-            st.caption("还没有上传文件。在对话区点「➕ 附件」上传。")
-        else:
-            names = [f.name for f in files]
-            sel_name = st.selectbox("选择文件", names, key="fl_sel")
-            sel_path = UPLOAD_DIR / sel_name
-            st.caption(
-                f"{icon_of(sel_path)} {sel_name} ｜ {fmt_size(sel_path.stat().st_size)}"
-                f" ｜ {datetime.fromtimestamp(sel_path.stat().st_mtime):%m-%d %H:%M}"
-            )
-            c1, c2, c3 = st.columns(3)
-            if c1.button("👁 预览", key="btn_preview_file", use_container_width=True):
-                st.session_state["preview_file"] = str(sel_path) if st.session_state.get("preview_file") != str(sel_path) else None
-            if c2.button("📚 入库", key="btn_ingest_file", use_container_width=True):
-                r = ingest_file(sel_path)
-                if "error" in r:
-                    st.error(r["error"])
-                else:
-                    st.success(f"已入库：{r.get('chunks', 0)} 个片段")
-            if c3.button("🗑 删除", key="btn_del_file", use_container_width=True):
-                sel_path.unlink()
-                st.session_state["preview_file"] = None
-                st.rerun()
-
-            preview = st.session_state.get("preview_file")
-            if preview and Path(preview).exists():
-                pp = Path(preview)
-                st.divider()
-                st.markdown(f"**预览：{pp.name}**")
-                if is_image(pp) and HAS_ZOOM:
-                    try:
-                        from PIL import Image as PILImage
-                        image_zoom(PILImage.open(pp), mode="scroll", size=(640, 420))
-                        st.caption("滚动缩放 / 拖动查看")
-                    except Exception:  # noqa: BLE001
-                        st.image(str(pp), width=520)
-                elif is_image(pp):
-                    st.image(str(pp), width=520)
-                elif pp.suffix.lower() in {".txt", ".md", ".csv"}:
-                    st.code(pp.read_text(encoding="utf-8", errors="replace")[:2000], language=None)
-                else:
-                    st.caption("该类型不支持直接预览，可用「发送」或「入库」。")
-
     with st.expander("📚 知识库管理", expanded=False):
         st.caption("支持：" + " / ".join(sorted(SUPPORTED_EXT)) + "；单文件 ≤20MB；文档复制进沙盒 data/kb/")
         kb_up = st.file_uploader(
@@ -545,6 +486,8 @@ if _action:
             prompt = h[ui]["display"] if "display" in h[ui] else h[ui]["content"]
             img = h[ui].get("img_path")
             files = h[ui].get("files")
+            if files and not any("data" in f for f in files):
+                files = None   # 附件为会话存档引用（无原始字节），重写时仅按文字
             del h[i]
             del h[ui]
             st.session_state["history"] = h
@@ -653,6 +596,6 @@ if prompt:
 st.divider()
 st.caption(
     f"📌 当前会话：{st.session_state.get('session_title', '')} ｜ 主力模型：{st.session_state['main_provider']}/{st.session_state['main_model']}"
-    f" ｜ 知识库 {len(list_docs())} 个文档 ｜ 文件 {len(files)} 个"
+    f" ｜ 知识库 {len(list_docs())} 个文档 ｜"
     + (" ｜ 💾 会话自动保存到 data/sessions/" if True else "")
 )
